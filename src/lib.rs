@@ -1,11 +1,14 @@
 pub mod models;
 
 use std::collections::HashMap;
-use rocket::futures::FutureExt;
+use std::sync::{Arc};
+use async_recursion::async_recursion;
 use rocket::http::Method;
-use rocket::serde::json::serde_json;
+use rocket::futures::future;
+use rocket::serde::json::Value;
 use rocket_cors::{AllowedHeaders, AllowedOrigins, Cors, CorsOptions};
-use crate::models::{Component, Data, Request, Type};
+use tokio::sync::Mutex;
+use crate::models::{Component};
 
 pub fn make_cors() -> Cors {
     let allowed_origins = AllowedOrigins::some_exact(&[
@@ -25,40 +28,59 @@ pub fn make_cors() -> Cors {
 }
 
 pub async fn execute_pipeline(components: Vec<Component>) -> Vec<Component> {
-    let client = reqwest::Client::new();
-    
-    let mut map: HashMap<String, Component> = components.into_iter()
-        .map(|comp| (comp.id.clone(), comp))
+    let mut root_ids = Vec::new();
+
+    let map: HashMap<String, Arc<Mutex<Component>>> = components.into_iter()
+        .map(|comp| {
+            if comp.is_root {
+                root_ids.push(comp.id.clone())
+            }
+            (comp.id.clone(), Arc::new(Mutex::new(comp)))
+        })
         .collect();
 
-    let mut response_cache = HashMap::new();
+    let t_map = Arc::new(map);
 
-    for (_, value) in map.clone() {
-        match value.type_c {
-            Type::Request => {
-                if let Data::Request(Request { url, .. }) = &value.data {
-                    let response_future = response_cache
-                        .entry(url.clone())
-                        .or_insert_with(|| {
-                            Box::pin(client.get(url).send().then(|result| async move {
-                                result?.text().await
-                            }))
-                        });
+    let root_futures: Vec<_> = root_ids.iter().map(|id| {
+        let t_map_clone = Arc::clone(&t_map);
+        async move {
+            resolve_data(id, t_map_clone).await;
+        }
+    }).collect();
 
-                    let resp = response_future.await.unwrap();
+    future::join_all(root_futures).await;
 
-                    for link in &value.links {
-                        if let Some(entry) = map.get_mut(link) {
-                            entry.data = Data::Value(serde_json::from_str(&resp).unwrap());
-                        }
-                    }
-                }
-            }
-            _ => {}
+    let results = Arc::try_unwrap(t_map)
+        .unwrap_or_else(|_| panic!("Arc ainda possui referências pendentes"))
+        .into_iter()
+        .map(|(_, comp_arc)| Arc::try_unwrap(comp_arc)
+            .unwrap_or_else(|_| panic!("Mutex ainda possui referências pendentes"))
+            .into_inner())
+        .collect::<Vec<Component>>();
+
+    results
+}
+
+#[async_recursion]
+async fn resolve_data(comp_id: &String, map: Arc<HashMap<String, Arc<Mutex<Component>>>>) -> Option<Value> {
+    let comp_lock = map.get(comp_id)?;
+
+    let mut comp = comp_lock.lock().await;
+
+    let mut results = Vec::new();
+
+    for child_id in &comp.child_nodes {
+        let child_value = resolve_data(child_id, Arc::clone(&map)).await;
+        results.push(child_value);
+    }
+
+    for result in results {
+        if let Some(value) = result {
+            comp.data.resolve_data(value)
         }
     }
 
+    comp.data.get_data().await;
 
-    map.into_iter()
-        .map(|comp| comp.1).collect()
+    comp.data.value().clone()
 }

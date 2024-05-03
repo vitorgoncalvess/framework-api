@@ -1,6 +1,5 @@
 use rocket::{get, launch, post, routes};
-use rocket::serde::json::{Json};
-use serde::Serialize;
+use rocket::serde::json::Json;
 use framework_api::{make_cors, execute_pipeline};
 use framework_api::models::{Component, User};
 
@@ -40,3 +39,4 @@ fn rocket() -> _ {
         .attach(make_cors())
         .manage(make_cors())
 }
+
