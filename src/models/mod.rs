@@ -1,39 +1,35 @@
-use std::collections::HashMap;
+mod request;
+mod object_mapper;
+mod plus;
+
+mod object_vizualizer;
+mod object;
+
+use std::marker::Send;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rocket::serde::{Deserialize, Serialize};
-use rocket::serde::json::Value;
+use rocket::serde::json::{Value};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Data {
-    Request(Request),
-    Value(Value),
-    Null,
+#[typetag::serde(tag = "type")]
+#[async_trait]
+pub trait Executable: Send + Sync {
+    async fn get_data(&mut self) {}
+
+    fn value(&self) -> &Option<Value> {
+        &None
+    }
+
+    fn resolve_data(&mut self, _value: Value) {}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Type {
-    #[serde(rename = "req")]
-    Request,
-    #[serde(rename = "json-vizualizer")]
-    JSONVisualizer,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
-    pub url: String,
-    method: String,
-    headers: HashMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Component {
     pub id: String,
-    pub data: Data,
-    #[serde(rename = "type")]
-    pub type_c: Type,
-    pub links: Vec<String>,
-    pub is_linked_with: Option<String>,
+    pub is_root: bool,
+    pub data: Box<dyn Executable>,
+    #[serde(rename = "childNodes")]
+    pub child_nodes: Vec<String>,
 }
 
 #[derive(Serialize)]
